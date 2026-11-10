@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EcoKSK - Sustainable School System (SDG 12)</title>
+<!-- Tailwind CSS CDN -->
+<script src="https://cdn.tailwindcss.com"></script>
+<!-- Lucide Icons CDN -->
+<script src="https://unpkg.com/lucide@latest"></script>
+<!-- QRCode.js CDN for dynamic QR generation -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<!-- Html5Qrcode CDN for real camera scanning -->
+<script src="https://unpkg.com/html5-qrcode"></script>
+<script>
+tailwind.config = {
+theme: {
+extend: {
+colors: {
+brand: {
+50: '#f0fdf4',
+100: '#dcfce7',
+200: '#bbf7d0',
+300: '#86efac',
+400: '#4ade80',
+500: '#22c55e',
+600: '#16a34a',
+700: '#15803d',
+800: '#166534',
+900: '#14532d',
+},
+ocean: {
+50: '#f0f9ff',
+100: '#e0f2fe',
+500: '#0ea5e9',
+600: '#0284c7',
+700: '#0369a1',
+}
+}
+}
+}
+};
+const defaultUsers = [
+{ id: 'STU001', name: 'Aiman Hakim bin Azman', role: 'student', classStr: '5 Al-Farabi', points: 450, avoidedPlastic: 35, email: 'student@school.edu.my' },
+{ id: 'TEA001', name: 'Cikgu Noraini binti Yusof', role: 'teacher', classStr: 'Guru Penasihat Eco', points: 680, avoidedPlastic: 52, email: 'teacher@school.edu.my' },
+{ id: 'CAN001', name: 'Staf Kantin Utama', role: 'canteen', classStr: 'Kaunter Kantin', points: 0, avoidedPlastic: 0, email: 'canteen@school.edu.my' },
+{ id: 'MGT001', name: 'Pengetua / Pentadbir', role: 'management', classStr: 'Pengurusan Sekolah', points: 0, avoidedPlastic: 0, email: 'admin@school.edu.my' }
+];
+function loadSavedUsers() {
+const saved = localStorage.getItem('ecoksk_all_users');
+if (saved) {
+try { return JSON.parse(saved); } catch(e) { return defaultUsers; }
+}
+localStorage.setItem('ecoksk_all_users', JSON.stringify(defaultUsers));
+return defaultUsers;
+}
+const state = {
+currentUser: null,
+users: loadSavedUsers(),
+activeTxUser: null,
+transactions: JSON.parse(localStorage.getItem('ecoksk_tx_history')) || [
+{ id: 'TX-101', time: '10:15 AM', userId: 'STU001', userName: 'Aiman Hakim bin Azman', role: 'student', container: 'own', drink: 'own', utensils: 'reusable', points: 25 },
+{ id: 'TX-102', time: '10:20 AM', userId: 'TEA001', userName: 'Cikgu Noraini binti Yusof', role: 'teacher', container: 'own', drink: 'plastic', utensils: 'reusable', points: 15 }
+],
+html5QrcodeScanner: null
+};
+function saveUsersToStorage() {
+localStorage.setItem('ecoksk_all_users', JSON.stringify(state.users));
+}
+function playBeepSound() {
+try {
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+const osc = audioCtx.createOscillator();
+const gain = audioCtx.createGain();
+osc.type = 'sine';
+osc.frequency.value = 880;
+gain.gain.value = 0.1;
+osc.connect(gain);
+gain.connect(audioCtx.destination);
+osc.start();
+osc.stop(audioCtx.currentTime + 0.15);
+} catch(e) {}
+}
+function showToast(msg, type = 'info') {
+const container = document.getElementById('toast-container');
+if (!container) return;
+const toast = document.createElement('div');
+const colors = {
+success: 'bg-emerald-600 text-white',
+warning: 'bg-amber-500 text-white',
+error: 'bg-rose-600 text-white',
+info: 'bg-slate-800 text-white'
+};
+toast.className = p-4 rounded-xl shadow-lg text-xs font-semibold flex items-center justify-between gap-3 ${colors[type] || colors.info} transition-all duration-300 pointer-events-auto;
+toast.innerHTML = <span>${msg}</span><button onclick="this.parentElement.remove()" class="opacity-70 hover:opacity-100">✕</button>;
+container.appendChild(toast);
+setTimeout(() => {
+toast.style.opacity = '0';
+setTimeout(() => toast.remove(), 300);
+}, 4000);
+}
+let confirmResolver = null;
+function customConfirm(title, message) {
+return new Promise((resolve) => {
+confirmResolver = resolve;
+const modal = document.getElementById('confirm-modal');
+if (!modal) return resolve(false);
+document.getElementById('confirm-title').innerText = title;
+document.getElementById('confirm-message').innerText = message;
+modal.classList.remove('hidden');
+});
+}
+function closeConfirmModal(result) {
+const modal = document.getElementById('confirm-modal');
+if (modal) modal.classList.add('hidden');
+if (confirmResolver) {
+confirmResolver(result);
+confirmResolver = null;
+}
+}
+function populateScannerDropdown() {
+const select = document.getElementById('manual-scan-user-select');
+if (!select) return;
+let html = '<option value="">-- Pilih Pengguna Terdaftar --</option>';
+state.users.forEach(u => {
+if (u.role === 'student' || u.role === 'teacher') {
+html += <option value="${u.id}">${u.name} (${u.id} - ${u.role === 'student' ? 'Pelajar' : 'Guru'})</option>;
+}
+});
+select.innerHTML = html;
+}
+function handleRegister(e) {
+e.preventDefault();
+const name = document.getElementById('reg-fullname').value.trim();
+const role = document.getElementById('reg-role').value;
+const classStr = document.getElementById('reg-class').value.trim() || (role === 'teacher' ? 'Guru' : 'Tingkatan 1');
+const email = document.getElementById('reg-email').value.trim();
+if (!name || !email) {
+showToast('Sila isi maklumat dengan lengkap.', 'warning');
+return;
+}
+const existing = state.users.find(u => u.email.toLowerCase() === email.toLowerCase());
+if (existing) {
+showToast('Email ini telah mendaftar. Sila guna fungsi Sign In.', 'warning');
+return;
+}
+const prefix = role === 'teacher' ? 'TEA' : 'STU';
+const randomNum = Math.floor(100 + Math.random() * 900);
+const newId = ${prefix}${randomNum};
+const newUser = {
+id: newId,
+name: name,
+role: role,
+classStr: classStr,
+points: 50,
+avoidedPlastic: 0,
+email: email
+};
+state.users.push(newUser);
+saveUsersToStorage();
+populateScannerDropdown();
+showToast(Pendaftaran Berjaya! ID QR anda: ${newId}. Diberi 50 Mata Bonus!, 'success');
+setCurrentUser(newUser);
+document.getElementById('signup-form').reset();
+}
+function switchAuthTab(tab) {
+const loginForm = document.getElementById('login-form');
+const signupForm = document.getElementById('signup-form');
+const loginBtn = document.getElementById('tab-login-btn');
+const signupBtn = document.getElementById('tab-signup-btn');
+if (!loginForm || !signupForm || !loginBtn || !signupBtn) return;
+if (tab === 'login') {
+loginForm.classList.remove('hidden');
+signupForm.classList.add('hidden');
+loginBtn.className = "flex-1 pb-2 text-center text-sm font-semibold border-b-2 border-brand-600 text-brand-600 transition-colors";
+signupBtn.className = "flex-1 pb-2 text-center text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-600 transition-colors";
+} else {
+loginForm.classList.add('hidden');
+signupForm.classList.remove('hidden');
+signupBtn.className = "flex-1 pb-2 text-center text-sm font-semibold border-b-2 border-brand-600 text-brand-600 transition-colors";
+loginBtn.className = "flex-1 pb-2 text-center text-sm font-semibold border-b-2 border-transparent text-slate-400 hover:text-slate-600 transition-colors";
+}
+}
+function toggleRegClassField() {
+const roleEl = document.getElementById('reg-role');
+const classContainer = document.getElementById('reg-class-container');
+if (!roleEl || !classContainer) return;
+if (roleEl.value === 'teacher') {
+classContainer.classList.add('hidden');
+} else {
+classContainer.classList.remove('hidden');
+}
+}
+function handleLogin(e) {
+e.preventDefault();
+const role = document.getElementById('login-role').value;
+const email = document.getElementById('login-email').value.trim();
+let user = state.users.find(u => u.email.toLowerCase() === email.toLowerCase() && u.role === role);
+if (!user) {
+user = state.users.find(u => u.role === role);
+}
+if (user) {
+setCurrentUser(user);
+showToast(Selamat Kembali, ${user.name}!, 'success');
+} else {
+showToast('Pengguna tidak dijumpai. Sila daftar akaun baharu.', 'error');
+}
+}
+function setCurrentUser(user) {
+state.currentUser = user;
+localStorage.setItem('ecoksk_active_user_id', user.id);
+const authOverlay = document.getElementById('auth-overlay');
+if (authOverlay) authOverlay.classList.add('hidden');
+const appSidebar = document.getElementById('app-sidebar');
+if (appSidebar) appSidebar.classList.remove('hidden');
+const avatar = user.name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
+const avatarEl = document.getElementById('nav-user-avatar');
+if (avatarEl) avatarEl.innerText = avatar;
+const nameEl = document.getElementById('nav-user-name');
+if (nameEl) nameEl.innerText = user.name;
+const roleEl = document.getElementById('nav-user-role');
+if (roleEl) roleEl.innerText = ${user.role === 'student' ? 'Pelajar' : user.role === 'teacher' ? 'Guru' : user.role === 'canteen' ? 'Staf Kantin' : 'Pentadbir'} (${user.classStr});
+renderSidebarMenu();
+if (user.role === 'canteen') {
+state.activeTxUser = state.users.find(u => u.role === 'student' || u.role === 'teacher') || state.users[0];
+navigateTo('canteen');
+} else {
+navigateTo('dashboard');
+}
+updateAllUI();
+}
+function handleLogout() {
+state.currentUser = null;
+localStorage.removeItem('ecoksk_active_user_id');
+const authOverlay = document.getElementById('auth-overlay');
+if (authOverlay) authOverlay.classList.remove('hidden');
+const appSidebar = document.getElementById('app-sidebar');
+if (appSidebar) appSidebar.classList.add('hidden');
+showToast('Anda telah log keluar.', 'info');
+}
+function renderSidebarMenu() {
+const menu = document.getElementById('sidebar-menu');
+if (!menu) return;
+const role = state.currentUser ? state.currentUser.role : 'student';
+let links = [];
+if (role === 'student' || role === 'teacher') {
+links = [
+{ id: 'dashboard', label: 'Papan Utama', icon: 'layout-dashboard' },
+{ id: 'qrcode', label: 'Kod QR Saya', icon: 'qr-code' },
+{ id: 'history', label: 'Rekod Transaksi', icon: 'history' },
+{ id: 'rewards', label: 'Tebuk Ganjaran', icon: 'gift' },
+{ id: 'leaderboard', label: 'Papan Kedudukan', icon: 'trophy' }
+];
+} else if (role === 'canteen') {
+links = [
+{ id: 'canteen', label: 'Kaunter Kantin Express', icon: 'store' },
+{ id: 'leaderboard', label: 'Papan Kedudukan', icon: 'trophy' }
+];
+} else if (role === 'management') {
+links = [
+{ id: 'dashboard', label: 'Ringkasan Pentadbir', icon: 'bar-chart-3' },
+{ id: 'leaderboard', label: 'Papan Kedudukan Sekolah', icon: 'trophy' }
+];
+}
+let html = '';
+links.forEach(link => {
+html += <button onclick="navigateTo('${link.id}')" id="nav-btn-${link.id}" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition text-sm font-semibold text-slate-400 hover:bg-slate-800 hover:text-white"> <i data-lucide="${link.icon}" class="w-4 h-4"></i> ${link.label} </button>;
+});
+menu.innerHTML = html;
+if (window.lucide) lucide.createIcons();
+}
+function navigateTo(pageId) {
+const pages = ['dashboard', 'qrcode', 'canteen', 'history', 'rewards', 'leaderboard'];
+pages.forEach(p => {
+const el = document.getElementById(page-${p});
+if (el) el.classList.add('hidden');
+const navBtn = document.getElementById(nav-btn-${p});
+if (navBtn) {
+navBtn.classList.remove('bg-brand-600', 'text-white');
+navBtn.classList.add('text-slate-400');
+}
+});
+const target = document.getElementById(page-${pageId});
+if (target) target.classList.remove('hidden');
+const activeNav = document.getElementById(nav-btn-${pageId});
+if (activeNav) {
+activeNav.classList.add('bg-brand-600', 'text-white');
+activeNav.classList.remove('text-slate-400');
+}
+if (pageId === 'qrcode') renderQRCode();
+if (pageId === 'canteen') populateScannerDropdown();
+updateAllUI();
+}
+function renderQRCode() {
+const qrContainer = document.getElementById('qrcode-display');
+if (!qrContainer || !state.currentUser) return;
+qrContainer.innerHTML = '';
+const payload = JSON.stringify({
+id: state.currentUser.id,
+name: state.currentUser.name,
+role: state.currentUser.role
+});
+new QRCode(qrContainer, {
+text: payload,
+width: 180,
+height: 180,
+colorDark: "#15803d",
+colorLight: "#ffffff"
+});
+document.getElementById('qr-user-name').innerText = state.currentUser.name;
+document.getElementById('qr-user-id').innerText = ID: ${state.currentUser.id};
+document.getElementById('qr-user-class').innerText = Peranan: ${state.currentUser.role === 'student' ? 'Pelajar' : 'Guru'} (${state.currentUser.classStr});
+document.getElementById('qr-user-points').innerText = state.currentUser.points;
+}
+function simulateQRScan() {
+const modal = document.getElementById('scanner-modal');
+if (!modal) return;
+modal.classList.remove('hidden');
+populateScannerDropdown();
+const loading = document.getElementById('camera-loading');
+if (loading) loading.classList.remove('hidden');
+if (typeof Html5Qrcode !== 'undefined') {
+if (state.html5QrcodeScanner) {
+state.html5QrcodeScanner.clear().catch(() => {});
+}
+state.html5QrcodeScanner = new Html5Qrcode("reader");
+state.html5QrcodeScanner.start(
+{ facingMode: "environment" },
+{ fps: 10, qrbox: { width: 220, height: 220 } },
+(decodedText) => {
+playBeepSound();
+handleQRScannedData(decodedText);
+closeScannerModal();
+},
+() => {}
+).then(() => {
+if (loading) loading.classList.add('hidden');
+}).catch(() => {
+if (loading) loading.classList.add('hidden');
+});
+}
+}
+function closeScannerModal() {
+const modal = document.getElementById('scanner-modal');
+if (modal) modal.classList.add('hidden');
+if (state.html5QrcodeScanner) {
+state.html5QrcodeScanner.stop().then(() => {
+state.html5QrcodeScanner.clear();
+}).catch(() => {});
+}
+}
+function scanSelectedUserFromDropdown() {
+const userId = document.getElementById('manual-scan-user-select').value;
+if (!userId) {
+showToast('Sila pilih pengguna daripada senarai.', 'warning');
+return;
+}
+playBeepSound();
+handleQRScannedData(userId);
+closeScannerModal();
+}
+function handleQRScannedData(dataStr) {
+let scannedId = dataStr;
+try {
+const parsed = JSON.parse(dataStr);
+if (parsed && parsed.id) scannedId = parsed.id;
+} catch(e) {}
+const user = state.users.find(u => u.id === scannedId);
+if (user) {
+state.activeTxUser = user;
+updateCanteenTxPanel();
+showToast(Imbasan Berjaya! Pembeli: ${user.name} (${user.id}), 'success');
+} else {
+showToast('ID QR tidak dijumpai dalam pangkalan data.', 'error');
+}
+}
+function handleCanteenTransaction(e) {
+if (e) e.preventDefault();
+if (!state.activeTxUser) {
+showToast('Sila imbas pengguna terlebih dahulu!', 'warning');
+return;
+}
+const form = document.getElementById('canteen-form');
+const foodVal = form.food_container.value;
+const drinkVal = form.drink_container.value;
+const utensilsVal = form.utensils.value;
+let pts = 0;
+let avoided = 0;
+if (foodVal === 'own') { pts += 10; avoided++; }
+if (drinkVal === 'own') { pts += 10; avoided++; }
+if (utensilsVal === 'reusable') { pts += 5; avoided++; }
+const now = new Date();
+const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const tx = {
+id: TX-${Math.floor(100 + Math.random() * 900)},
+time: timeStr,
+userId: state.activeTxUser.id,
+userName: state.activeTxUser.name,
+role: state.activeTxUser.role,
+container: foodVal,
+drink: drinkVal,
+utensils: utensilsVal,
+points: pts
+};
+state.transactions.unshift(tx);
+localStorage.setItem('ecoksk_tx_history', JSON.stringify(state.transactions));
+state.activeTxUser.points += pts;
+state.activeTxUser.avoidedPlastic += avoided;
+saveUsersToStorage();
+playBeepSound();
+showToast(Transaksi disimpan! +${pts} mata diberikan kepada ${state.activeTxUser.name}., 'success');
+updateAllUI();
+}
+function updateCanteenTxPanel() {
+if (!state.activeTxUser) return;
+const user = state.activeTxUser;
+const avatar = user.name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
+const avatarEl = document.getElementById('canteen-user-avatar');
+if (avatarEl) avatarEl.innerText = avatar;
+const nameEl = document.getElementById('canteen-user-name');
+if (nameEl) nameEl.innerText = user.name;
+const idEl = document.getElementById('canteen-user-id');
+if (idEl) idEl.innerText = user.id;
+const classEl = document.getElementById('canteen-user-class');
+if (classEl) classEl.innerText = user.classStr;
+const ptsEl = document.getElementById('canteen-user-pts');
+if (ptsEl) ptsEl.innerText = user.points;
+}
+function updateAllUI() {
+const u = state.currentUser;
+if (!u) return;
+const ptsEl = document.getElementById('dash-eco-points');
+if (ptsEl) ptsEl.innerText = u.points;
+const plasticEl = document.getElementById('dash-plastic-avoided');
+if (plasticEl) plasticEl.innerText = ${u.avoidedPlastic} item;
+const welcomeTitle = document.getElementById('dash-welcome-title');
+if (welcomeTitle) welcomeTitle.innerText = Selamat Kembali, ${u.name.split(' ')[0]}! 🌱;
+const rewardsBal = document.getElementById('rewards-balance');
+if (rewardsBal) rewardsBal.innerText = u.points;
+updateCanteenTxPanel();
+renderCanteenLogTable();
+renderStudentHistoryTable();
+renderLeaderboard();
+renderRewardsGrid();
+}
+function renderCanteenLogTable() {
+const tbody = document.getElementById('canteen-log-tbody');
+if (!tbody) return;
+let html = '';
+state.transactions.slice(0, 10).forEach(tx => {
+html += <tr class="hover:bg-slate-50 transition"> <td class="py-3 px-4 font-mono text-slate-500">${tx.time}</td> <td class="py-3 px-4 font-bold text-slate-800">${tx.userName}</td> <td class="py-3 px-4 font-mono text-xs text-brand-700">${tx.userId}</td> <td class="py-3 px-4">${tx.container === 'own' ? '♻️ Bawa Sendiri' : '🛍️ Plastik'}</td> <td class="py-3 px-4">${tx.drink === 'own' ? '🥤 Botol Sendiri' : '🥤 Plastik'}</td> <td class="py-3 px-4">${tx.utensils === 'reusable' ? '🥄 Sudu Sendiri' : '🍴 Plastik'}</td> <td class="py-3 px-4 text-right font-extrabold text-brand-600">+${tx.points} pts</td> </tr>;
+});
+tbody.innerHTML = html;
+}
+function renderStudentHistoryTable() {
+const tbody = document.getElementById('student-history-tbody');
+if (!tbody || !state.currentUser) return;
+const userTxs = state.transactions.filter(t => t.userId === state.currentUser.id);
+let html = '';
+userTxs.forEach(tx => {
+html += <tr class="hover:bg-slate-50 transition"> <td class="py-3 px-4 font-mono text-slate-500">${tx.time}</td> <td class="py-3 px-4">${tx.container === 'own' ? '♻️ Bekas Sendiri (+10)' : '🛍️ Plastik (+0)'}</td> <td class="py-3 px-4">${tx.drink === 'own' ? '🥤 Botol Sendiri (+10)' : '🥤 Cawan Plastik (+0)'}</td> <td class="py-3 px-4">${tx.utensils === 'reusable' ? '🥄 Sudu Sendiri (+5)' : '🍴 Sudu Plastik (+0)'}</td> <td class="py-3 px-4 text-right font-bold text-brand-600">+${tx.points} pts</td> </tr>;
+});
+tbody.innerHTML = html || '<tr><td colspan="5" class="py-4 text-center text-slate-400">Tiada rekod transaksi ditemui.</td></tr>';
+}
+function renderLeaderboard() {
+const container = document.getElementById('leaderboard-list');
+if (!container) return;
+const sorted = [...state.users].sort((a, b) => b.points - a.points);
+let html = '';
+sorted.forEach((u, idx) => {
+html += <div class="flex items-center justify-between p-4 bg-white rounded-2xl border border-slate-100 shadow-sm"> <div class="flex items-center gap-3"> <span class="font-extrabold text-slate-400 text-sm w-6">#${idx + 1}</span> <div> <p class="font-bold text-slate-800 text-sm">${u.name}</p> <p class="text-xs text-slate-400">${u.role === 'student' ? 'Pelajar' : 'Guru'} • ${u.classStr}</p> </div> </div> <div class="text-right"> <span class="font-extrabold text-brand-600 text-sm">${u.points} pts</span> <p class="text-[10px] text-slate-400">${u.avoidedPlastic} item plastik dielakkan</p> </div> </div>;
+});
+container.innerHTML = html;
+}
+function renderRewardsGrid() {
+const grid = document.getElementById('rewards-grid');
+if (!grid) return;
+const items = [
+{ title: 'Voucher Makanan RM2', pts: 200, desc: 'Potongan harga RM2 untuk sebarang hidangan di kantin.' },
+{ title: 'Botol Air EcoKSK', pts: 500, desc: 'Botol air keluli tahan karat mesra alam.' },
+{ title: 'Lencana Wira Hijau', pts: 150, desc: 'Lencana rasmi program SDG 12 sekolah.' }
+];
+let html = '';
+items.forEach(item => {
+html += <div class="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-col justify-between space-y-4"> <div> <h3 class="font-bold text-slate-800 text-base">${item.title}</h3> <p class="text-xs text-slate-500 mt-1">${item.desc}</p> </div> <div class="flex items-center justify-between pt-2"> <span class
